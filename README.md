@@ -27,7 +27,7 @@ Middleware ─► Fault log (error code per integration point) ─► Dashboard 
 | `src/Avis.App` | **Startup project.** WinForms station app (`AVIS.exe`): the BaseProgram window, background workers, Simulation mode. `net8.0-windows` |
 | `src/Avis.Core` | All station logic, no UI: config + INI, iFactory client, JabilEye client, LightGuide client/monitor, station sequencer, fault log, image staging. Plain `net8.0`, fully unit-tested |
 | `src/Avis.Scanner.Hid` | Raw Input badge-scanner reader (from the JabilEye middleware, verified on real hardware) |
-| `tests/Avis.Tests` | xUnit tests for Core - 141 tests, including the whole flow chart end to end |
+| `tests/Avis.Tests` | xUnit tests for Core - 156 tests, including the whole flow chart end to end and the screen switching |
 
 The iFactory, JabilEye and badge-scanner code is taken from the tested
 `JabilEye` middleware (`prarthu05/jabileye`), with the bug fixes listed below.
@@ -69,19 +69,38 @@ real devices using `appsettings.json` and needs the `IFACTORY_USERNAME` /
 
 ## The station screen
 
+AVIS is **one window** with three screens that swap in place. It never opens a
+new window for them.
+
+| Screen | Shown |
+|---|---|
+| **Station** (iFactory + part status) | Automatically whenever the operator is needed: part detected / scan badge, sending to iFactory, rework (NG), escalation, part not confirmed, part confirmed - move on, idle - and whenever a fault popup appears |
+| **Visual aid** | Automatically when LightGuide moves to a step that has a visual aid, and again as soon as a rework is cleared (NG -> OK) |
+| **Fault feed** | From the sidebar |
+
+How the screens switch:
+- The rule lives in `ScreenSelector` and is unit-tested. It only switches on a
+  change (new step, new phase, new visual aid). If the operator picks a screen
+  from the sidebar, the next status update doesn't pull them away.
+- `Avis:AutoShowVisualAid = false` turns automatic switching off. The sidebar
+  still switches screens by hand.
+- The visual aid always reuses the same browser panel and only navigates when
+  the page changes.
+- Links that would open a pop-up window (`target="_blank"`, `window.open`), in
+  the visual aid or in iFactory, open in the same panel instead. Alt+Left goes back.
+- The visual aid screen has a slim strip on top with the Asset ID, model, step
+  and the current message, so the operator always knows where they are.
+
+What each screen contains:
 - **Header:** STG/PRD mode (taken from the INI), station resource, logo.
-- **Production tab:** iFactory web UI (left). On the right are MODEL RUNNING,
+- **Station screen:** iFactory web UI (left). On the right are MODEL RUNNING,
   STATION NAME, PASS / FAIL / YIELD, then the colour-coded banner that tells the
   operator what to do now. The banner states are: scan badge (amber), in process
   (navy), rework (orange), escalate (dark red), confirmed OK - move to next
   station (green), not confirmed (red). Below the banner are the part's NTID,
   Asset ID, WIP, model, LightGuide program and step, and the latest LJ / IV4
   result per check.
-- **Visual Aid tab:** the visual aid for the current model and step. AVIS
-  switches to it automatically on each LightGuide step (`Avis:AutoShowVisualAid`)
-  and back to Production whenever the operator has to act.
-- **Fault Feed tab:** the dashboard fault feed. Every fault is shown with its
-  code, integration point and severity, and can be filtered by integration point.
+- **Sidebar:** STATION / VISUAL AID / FAULTS. The current screen is highlighted.
 - **Status bar:** link state of the badge scanner, JabilEye, iFactory and
   LightGuide (green / red / grey).
 - **CVG button** (top left) closes AVIS after a confirmation.

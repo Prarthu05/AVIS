@@ -14,6 +14,7 @@ public class OperatorAlertService : IOperatorAlerts
     private readonly ILogger<OperatorAlertService> _logger;
     private readonly string _stationLabel;
     private Form? _owner;
+    private Action? _onAlert;
 
     public OperatorAlertService(ILogger<OperatorAlertService> logger, JabilEyeCameraOptions camera, StationOptions station)
     {
@@ -23,7 +24,12 @@ public class OperatorAlertService : IOperatorAlerts
         _stationLabel = string.IsNullOrWhiteSpace(camera.ResourceName) ? station.Name : camera.ResourceName;
     }
 
-    public void Attach(Form owner) => _owner = owner;
+    /// <param name="onAlert">Runs on the UI thread just before each popup - e.g. bring the station screen forward.</param>
+    public void Attach(Form owner, Action? onAlert = null)
+    {
+        _owner = owner;
+        _onAlert = onAlert;
+    }
 
     public async Task ShowAndWaitForResetAsync(FaultCode code, string message, CancellationToken ct)
     {
@@ -53,6 +59,7 @@ public class OperatorAlertService : IOperatorAlerts
             }
             try
             {
+                _onAlert?.Invoke();
                 using (dialog = new ErrorDialogForm(code, message, _stationLabel))
                 {
                     dialog.ShowDialog(owner);
