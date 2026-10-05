@@ -1,0 +1,28 @@
+# Build artifacts
+**/bin/
+**/obj/
+*.user
+
+# IDE
+.vs/
+.vscode/
+
+# Secrets - never commit real credentials
+.env
+appsettings.Local.json
+appsettings.Production.json
+
+# Logs
+*.log
+logs/
+
+# AVIS runtime output (when run from the source tree)
+faults/
+images/
+data/
+config/
+src/Avis.App/sim/cache/
+src/Avis.App/sim/images/
+src/Avis.App/sim/IV4Drop/
+src/Avis.App/sim/faults/
+src/Avis.App/sim/data/

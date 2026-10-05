@@ -1,0 +1,19 @@
+; Sample station INI used by the "AVIS (Simulation)" launch profile.
+; Same format as the real AVIPROJECT_INI.txt on the share.
+
+[CONFIG]
+STG = TRUE
+
+[RECIPE]
+; PartNumber (iFactory WIP material) = Model
+SIM-PN-001 = CVG300-SIM
+
+[JABIL_EYE]
+; Station PC hostname = JabilEye camera IP
+SIM-PC = 127.0.0.1
+
+[VISUAL_ADD]
+; Model = visual aid for every step, Model:Step = visual aid for that LightGuide step
+CVG300-SIM = sim/va/overview.html
+CVG300-SIM:2 = sim/va/step2-lj.html
+CVG300-SIM:3 = sim/va/step3-iv4.html
