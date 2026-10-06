@@ -1,0 +1,15 @@
+[Unit]
+Description=AVIS Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=jabilie
+WorkingDirectory=/opt/avis-dashboard/dashboard
+ExecStart=/opt/avis-dashboard/dashboard/node_modules/.bin/next start -p 3230
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

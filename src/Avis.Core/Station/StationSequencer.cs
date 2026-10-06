@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using Avis.Configuration;
+using Avis.Dashboard;
 using Avis.Faults;
 using Avis.IFactory;
 using Avis.Imaging;
@@ -26,12 +27,16 @@ public class PartSession
         StartedAt = startedAt;
     }
 
+    /// <summary>Correlation id: tags every dashboard event and log line for this unit.</summary>
+    public string UnitId { get; } = Guid.NewGuid().ToString();
     public string AssetId { get; }
     public string OperatorId { get; }
     public string OperatorLogin { get; }
     public Wip Wip { get; }
     public long HistoryId { get; }
     public string? Model { get; }
+    /// <summary>Product name as the dashboard knows it (falls back to the model / material).</summary>
+    public string? Product { get; set; }
     public DateTimeOffset StartedAt { get; }
     public string? Program { get; set; }
     public int? Step { get; set; }
@@ -103,6 +108,8 @@ public class StationSequencer
     private readonly AviProjectConfig _ini;
     private readonly ILogger<StationSequencer> _logger;
     private readonly TimeProvider _time;
+    private readonly IVisualAidResolver _visualAids;
+    private readonly IStationEventSink _events;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private PartSession? _session;
@@ -121,7 +128,9 @@ public class StationSequencer
         SequenceOptions sequence,
         AviProjectConfig ini,
         ILogger<StationSequencer> logger,
-        TimeProvider time)
+        TimeProvider time,
+        IVisualAidResolver? visualAids = null,
+        IStationEventSink? events = null)
     {
         _mes = mes;
         _operator = currentOperator;
@@ -137,6 +146,8 @@ public class StationSequencer
         _ini = ini;
         _logger = logger;
         _time = time;
+        _visualAids = visualAids ?? NoVisualAids.Instance;
+        _events = events ?? NullStationEventSink.Instance;
 
         var c = counters.Current;
         _status.Update(s => s with { PassCount = c.Pass, FailCount = c.Fail, ReworkCount = c.Rework });
@@ -144,6 +155,10 @@ public class StationSequencer
 
     /// <summary>The active part, if any (for diagnostics/tests).</summary>
     public PartSession? Session => _session;
+
+    /// <summary>Correlation id of the current/last part if it is <paramref name="assetId"/> - lets faults join their unit's timeline.</summary>
+    public string? UnitIdFor(string? assetId) =>
+        _session is { } s && assetId is not null && string.Equals(s.AssetId, assetId, StringComparison.OrdinalIgnoreCase) ? s.UnitId : null;
 
     /// <summary>Badge scan - deliberately NOT behind the gate: a part waiting for its badge holds the gate.</summary>
     public void OnBadgeScanned(string employeeId)
@@ -214,6 +229,7 @@ public class StationSequencer
                 $"New part {assetId} arrived before part {previous.AssetId} was confirmed - part {previous.AssetId} was not completed in iFactory.",
                 previous.AssetId, previous.OperatorId, previous.Wip.Id);
             previous.Finished = true;
+            Emit(StationEvent.Types.UnitAbandoned, previous, e => e with { Message = $"replaced by {assetId}" });
             CountFail();
         }
         _session = null;
@@ -297,12 +313,16 @@ public class StationSequencer
             }
         }
 
-        _session = new PartSession(assetId, employeeId, operatorLogin, wip, historyId.Value, model, _time.GetUtcNow());
+        _session = new PartSession(assetId, employeeId, operatorLogin, wip, historyId.Value, model, _time.GetUtcNow())
+        {
+            Product = _visualAids.ProductFor(wip.MaterialName, model, null) ?? model ?? wip.MaterialName,
+        };
+        Emit(StationEvent.Types.UnitStarted, _session);
         _logger.LogInformation(
             "Started WIP {WipId} (Asset ID {AssetId}) on {Resource} as {Operator}, historyId={HistoryId}",
             wip.Id, assetId, _camera.ResourceName, operatorLogin, historyId);
 
-        _status.Update(s => s with { VisualAidUrl = _ini.FindVisualAid(model, null) ?? s.VisualAidUrl });
+        _status.Update(s => s with { VisualAidUrl = _visualAids.Resolve(wip.MaterialName, model, null, null) ?? _ini.FindVisualAid(model, null) ?? s.VisualAidUrl });
         SetPhase(StationPhase.InProcess, $"WIP started for {assetId} - follow LightGuide");
     }
 
@@ -314,8 +334,16 @@ public class StationSequencer
             session.Step = step.Step;
         }
 
-        // Visual aid per step: by the part's model (from the recipe), falling back to the LightGuide program name.
-        var url = _ini.FindVisualAid(_session?.Model, step.Step) ?? _ini.FindVisualAid(step.Program, step.Step);
+        // Visual aid per (product, step): the dashboard's approved VA first (matched by
+        // WIP part number, then model, then LightGuide program), then the INI entries.
+        var active = _session is { Finished: false } current ? current : null;
+        var url = _visualAids.Resolve(active?.Wip.MaterialName, active?.Model, step.Program, step.Step)
+            ?? _ini.FindVisualAid(active?.Model, step.Step)
+            ?? _ini.FindVisualAid(step.Program, step.Step);
+        if (active is not null)
+        {
+            Emit(StationEvent.Types.StepChanged, active, e => e with { Step = step.Step, StepComment = step.StepComment });
+        }
         _status.Update(s => s with
         {
             Program = step.Program,
@@ -361,6 +389,16 @@ public class StationSequencer
         {
             Checks = st.Checks.RemoveAll(c => c.Name.Equals(state.Name, StringComparison.OrdinalIgnoreCase)).Add(state),
         });
+        Emit(StationEvent.Types.CheckResult, session, e => e with
+        {
+            Check = result.Check.Name,
+            Result = result.Passed ? "OK" : "NG",
+            Value = result.Value,
+            Attempt = state.Attempts,
+            Failures = state.Failures,
+            Measurements = result.Measurements.Count > 0 ? result.Measurements : null,
+            ImagePath = state.ImagePath,
+        });
 
         if (session is null)
         {
@@ -400,6 +438,7 @@ public class StationSequencer
         if (state.Failures >= max)
         {
             session.Escalated = true;
+            Emit(StationEvent.Types.Escalated, session, e => e with { Check = result.Check.Name, Failures = state.Failures });
             _faults.Record(FaultCode.ReworkLimitReached, FaultSeverity.Critical,
                 $"{result.Check.Name} failed {state.Failures} times on asset {session.AssetId} - escalate to supervisor/engineer.",
                 session.AssetId, session.OperatorId, session.Wip.Id);
@@ -479,6 +518,7 @@ public class StationSequencer
                 $"LightGuide completed {completed.Program} for asset {session.AssetId} but the part is not confirmed ({reason}) - WIP not completed in iFactory.",
                 session.AssetId, session.OperatorId, session.Wip.Id);
             session.Finished = true;
+            Emit(StationEvent.Types.UnitNotConfirmed, session, e => e with { Message = reason });
             CountFail();
             SetPhase(session.Escalated ? StationPhase.EscalationRequired : StationPhase.NotConfirmed,
                 $"Part {session.AssetId} NOT confirmed ({reason}) - do not move to next station", isError: true);
@@ -511,6 +551,7 @@ public class StationSequencer
         }
 
         session.Finished = true;
+        Emit(StationEvent.Types.UnitConfirmed, session, e => e with { Message = "Station data confirmed OK" });
         var counters = _counters.AddPass();
         _status.Update(st => st with { PassCount = counters.Pass, FailCount = counters.Fail, ReworkCount = counters.Rework });
         _logger.LogInformation("Completed WIP {WipId} (Asset ID {AssetId}) - station data confirmed OK", session.Wip.Id, session.AssetId);
@@ -556,6 +597,32 @@ public class StationSequencer
         if (session is not null && !session.Escalated)
         {
             SetPhase(StationPhase.NotConfirmed, $"LightGuide program aborted - restart it for {session.AssetId}", isError: true);
+        }
+    }
+
+    private void Emit(string type, PartSession? session, Func<StationEvent, StationEvent>? extra = null)
+    {
+        var e = new StationEvent
+        {
+            Type = type,
+            At = _time.GetUtcNow(),
+            UnitId = session?.UnitId,
+            AssetId = session?.AssetId,
+            Ntid = session?.OperatorId,
+            WipId = session?.Wip.Id,
+            Material = session?.Wip.MaterialName,
+            Product = session?.Product,
+            Program = session?.Program,
+            Step = session?.Step,
+        };
+        try
+        {
+            _events.Emit(extra is null ? e : extra(e));
+        }
+        catch (Exception ex)
+        {
+            // Analytics must never stop the station.
+            _logger.LogWarning(ex, "Could not queue dashboard event {Type}", type);
         }
     }
 

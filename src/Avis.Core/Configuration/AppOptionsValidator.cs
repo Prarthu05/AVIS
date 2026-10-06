@@ -1,3 +1,4 @@
+using Avis.Dashboard;
 using Avis.LightGuide;
 
 namespace Avis.Configuration;
@@ -74,6 +75,34 @@ public static class AppOptionsValidator
                     errors.Add($"LightGuide check '{check.Name}' needs a ResultVariable.");
                 }
             }
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new ConfigurationValidationException("Invalid configuration:\n- " + string.Join("\n- ", errors));
+        }
+    }
+
+    /// <summary>Only checked when the dashboard is switched on - a station without it runs exactly as before.</summary>
+    public static void ValidateDashboard(DashboardOptions dashboard)
+    {
+        if (!dashboard.Enabled)
+        {
+            return;
+        }
+
+        var errors = new List<string>();
+        if (!Uri.TryCreate(dashboard.BaseUrl, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            errors.Add($"Dashboard:BaseUrl '{dashboard.BaseUrl}' is not a valid URL (e.g. http://10.77.193.155:3230).");
+        }
+        if (string.IsNullOrWhiteSpace(dashboard.ApiKey))
+        {
+            errors.Add("AVIS_DASHBOARD_KEY environment variable must be set when Dashboard:Enabled is true (same value as AVIS_STATION_KEY on the dashboard).");
+        }
+        if (string.IsNullOrWhiteSpace(dashboard.StationName))
+        {
+            errors.Add("Dashboard:StationName (or Station:Name) is required.");
         }
 
         if (errors.Count > 0)

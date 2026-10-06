@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+/* This project root doubles as $HOME for the downtimeapp system user,
+   so keep Tailwind's automatic content scanner out of its dotfiles
+   (.ssh especially -- it's permission-locked and shouldn't be touched). */
+@source not "../../.ssh";
+@source not "../../.local";
+
+/* Font vars only. Colors are declared separately below via plain @theme
+   (not @theme inline) since inline bakes literal values into each utility
+   at build time instead of emitting a real, overridable custom property --
+   confirmed against the compiled output. The light/dark toggle needs the
+   real custom property, so only fonts use inline here. */
+@theme inline {
+  --font-sans: var(--font-roboto);
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* Jabil Brand Guidelines, copied from Relay's own source. Dark values are
+   the bare default (this app shipped dark-only for most of this project).
+   Light values are declared further down under a data-theme=light
+   override. No OS prefers-color-scheme media query -- Relay deliberately
+   ignores that too, since floor terminals are shared kiosks. */
+@theme {
+  --color-neutral-50: #e7e8ea;
+  --color-neutral-100: #dcddde;
+  --color-neutral-200: #c9cbce;
+  --color-neutral-300: #aeb1b7;
+  --color-neutral-400: #9a9ea4;
+  --color-neutral-500: #888c92;
+  --color-neutral-600: #63666c;
+  --color-neutral-700: #494c52;
+  --color-neutral-800: #33373d;
+  --color-neutral-900: #1e2126;
+  --color-neutral-950: #16181c;
+
+  --color-indigo-200: #b3dced;
+  --color-indigo-300: #82c0e0;
+  --color-indigo-400: #5aa9d4;
+  --color-indigo-500: #3596ca;
+
+  --color-emerald-300: #6bdba9;
+  --color-emerald-400: #34c98a;
+  --color-emerald-500: #2aa876;
+  --color-amber-200: #ffd0ac;
+  --color-amber-300: #ffb583;
+  --color-amber-400: #ff9a5c;
+  --color-amber-500: #e07d45;
+  --color-red-200: #fbc0c3;
+  --color-red-300: #f79ba0;
+  --color-red-400: #f16a72;
+  --color-red-500: #d4525a;
+
+  --color-sky-200: #a8e8f7;
+  --color-sky-300: #7ce0f4;
+  --color-sky-400: #4dd0f0;
+  --color-sky-500: #2bb8db;
+}
+
+/* Light theme, same real Jabil values, light-mode set. The neutral scale
+   flips direction versus dark mode: 950 is always the page background and
+   50 is always the primary text color, and here the background is the
+   light end while the text is the dark end -- opposite of the usual
+   Tailwind gray ramp, but consistent with how these slots are actually
+   used everywhere in this app. */
+:root[data-theme="light"] {
+  --color-neutral-50: #414042;
+  --color-neutral-100: #4c4c49;
+  --color-neutral-200: #575651;
+  --color-neutral-300: #60605b;
+  --color-neutral-400: #666569;
+  --color-neutral-500: #6b6d70;
+  --color-neutral-600: #9ea0a2;
+  --color-neutral-700: #c2c4c5;
+  --color-neutral-800: #dadcdd;
+  --color-neutral-900: #ffffff;
+  --color-neutral-950: #f1f2f2;
+
+  /* 200/300 are dark here, not light tints -- every X-200/X-300 usage in
+     this app is badge/pill text paired with a translucent X-500
+     background. In dark mode that pairing is a dark overlay needing light
+     text (200/300 as light tints, correct there). In light mode the same
+     bg-X-500/opacity wash is pale, so the text needs to be dark and
+     saturated instead -- otherwise it's light text on a near-white wash,
+     unreadable (this is exactly the bug a real screenshot caught: Level 5
+     showing as pale pink text on a pale pink badge). 400/500 stay real
+     Jabil values, used directly on the page background elsewhere. */
+  --color-indigo-200: #002744;
+  --color-indigo-300: #003a63;
+  --color-indigo-400: #0d5590;
+  --color-indigo-500: #003865;
+
+  --color-emerald-300: #016038;
+  --color-emerald-400: #008651;
+  --color-emerald-500: #026b40;
+  --color-amber-200: #8a3814;
+  --color-amber-300: #9c4419;
+  --color-amber-400: #dc582a;
+  --color-amber-500: #b8461f;
+  --color-red-200: #7a1e24;
+  --color-red-300: #8f2830;
+  --color-red-400: #cb333b;
+  --color-red-500: #a8262d;
+
+  --color-sky-200: #0a6884;
+  --color-sky-300: #0c7a9c;
+  --color-sky-400: #15bef0;
+  --color-sky-500: #0f9bc4;
+}
+
+html {
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+body {
+  font-feature-settings: "tnum" 1, "cv05" 1;
+}
+
+/* Every metric in this app is a number someone on the floor has to read at
+   a glance -- keep digits tabular everywhere by default, not just where a
+   class remembers to ask for it. */
+table,
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Theme-correct Jabil logo with zero JS and zero flash -- both variants
+   render, CSS picks which one is visible, resolved by the same
+   synchronous pre-paint data-theme attribute everything else uses, so
+   there's never a frame with the wrong one showing. Used on /login,
+   which (unlike GlobalNav) is a Server Component and can't read
+   localStorage itself to pick a src. jabil-logo-dark.png is the light
+   wordmark for a dark background; jabil-logo.png is the dark wordmark
+   for a light background -- naming matches GlobalNav's own comment. */
+.theme-logo-dark {
+  display: block;
+}
+.theme-logo-light {
+  display: none;
+}
+:root[data-theme="light"] .theme-logo-dark {
+  display: none;
+}
+:root[data-theme="light"] .theme-logo-light {
+  display: block;
+}
+
+/* AVIS chart series colours - validated for colour-vision deficiency with
+   the dataviz palette checker (blue vs orange: CVD ΔE ~19-21 in both
+   themes). Red/green was rejected (ΔE ~5 for deutan viewers). */
+:root {
+  --chart-ok: #3596ca;
+  --chart-ng: #e07d45;
+  --chart-neutral: #5aa9d4;
+}
+:root[data-theme="light"] {
+  --chart-ok: #0d5590;
+  --chart-ng: #dc582a;
+  --chart-neutral: #0d5590;
+}

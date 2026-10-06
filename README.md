@@ -17,7 +17,8 @@ HN arrives at station (conveyor)
                                      └ no ──► send station data to iFactory (attributes + Complete WIP)
                                               ─► move to next station
 Middleware ─► Fault log (error code per integration point) ─► Dashboard fault feed
-          └─► Local image staging (IV4 images tagged with AssetID, on the station PC)
+          ├─► Local image staging (IV4 images tagged with AssetID, on the station PC)
+          └─► AVIS dashboard on the Pi (events + heartbeat up, approved VAs down)
 ```
 
 ## Solution layout (open `AVIS.sln` in Visual Studio 2022)
@@ -25,9 +26,10 @@ Middleware ─► Fault log (error code per integration point) ─► Dashboard 
 | Project | What it is |
 |---|---|
 | `src/Avis.App` | **Startup project.** WinForms station app (`AVIS.exe`): the BaseProgram window, background workers, Simulation mode. `net8.0-windows` |
-| `src/Avis.Core` | All station logic, no UI: config + INI, iFactory client, JabilEye client, LightGuide client/monitor, station sequencer, fault log, image staging. Plain `net8.0`, fully unit-tested |
+| `src/Avis.Core` | All station logic, no UI: config + INI, iFactory client, JabilEye client, LightGuide client/monitor, station sequencer, fault log, image staging, dashboard outbox + VA cache. Plain `net8.0`, fully unit-tested |
 | `src/Avis.Scanner.Hid` | Raw Input badge-scanner reader (from the JabilEye middleware, verified on real hardware) |
-| `tests/Avis.Tests` | xUnit tests for Core - 156 tests, including the whole flow chart end to end and the screen switching |
+| `tests/Avis.Tests` | xUnit tests for Core - 172 tests, including the whole flow chart end to end, the screen switching and the dashboard sync |
+| `dashboard/` | **AVIS dashboard** (Next.js) that runs on the Raspberry Pi - see below. Not part of the .NET solution |
 
 The iFactory, JabilEye and badge-scanner code is taken from the tested
 `JabilEye` middleware (`prarthu05/jabileye`), with the bug fixes listed below.
@@ -122,6 +124,7 @@ PASS / FAIL / rework counters are per day and survive a restart (`data/counters-
 | `Sequence` | Max failed attempts before escalation (5), sending check results to iFactory as WIP attributes, required checks |
 | `ImageStaging` | IV4 drop folder, staging folder, retention |
 | `FaultLog` | Local fault-log folder and an optional shared folder for a central dashboard |
+| `Dashboard` | AVIS dashboard on the Pi: `Enabled` (default false), `BaseUrl` (`http://10.77.193.155:3230`), upload/heartbeat/VA-sync intervals, VA cache + outbox paths. The key comes from the `AVIS_DASHBOARD_KEY` env var |
 
 ### Station INI (`AVIPROJECT_INI.txt` on the share)
 
@@ -139,6 +142,10 @@ AVIS-PC-02 = 10.72.194.166       ; this station PC's hostname = its JabilEye cam
 CVG300-A = https://.../overview  ; visual aid for every step of the model
 CVG300-A:3 = \\server\va\step3.pdf  ; visual aid for LightGuide step 3 only
 ```
+
+When the dashboard is enabled, a VA approved there for the product wins; the
+INI `[VISUAL_ADD]` entries are the fallback for products/steps the dashboard
+doesn't map yet.
 
 Section names are case-insensitive and values may contain `=`. The old
 `[JABI_LEYE]` spelling is still accepted. If the share is unreachable AVIS uses
@@ -196,13 +203,49 @@ Faults are written to `faults\faults-yyyyMMdd.jsonl`, one JSON object per line.
 If `FaultLog:SharedDirectory` is set they are also written to
 `<share>\<station>-faults-yyyyMMdd.jsonl`, for the techs'/engineers' dashboard.
 
+## AVIS dashboard (Raspberry Pi)
+
+`dashboard/` is a Next.js app built like the Pi's other apps (DowntimeApp
+stack, App Hub SSO). Anyone on the network opens `http://10.77.193.155:3230`.
+
+- **Sign-in:** the same as the other Pi apps - App Hub's shared NTID sign-in,
+  no new passwords. NTID 4375789 is the bootstrap Admin; everyone else starts
+  as Viewer and requests a role, which the Admin approves (Admin, Approver,
+  Engineer, Technician, Viewer).
+- **Visual aids per product:** an Engineer creates a product (name + iFactory
+  part numbers), uploads a PDF (rendered to page images) or images, and maps
+  each LightGuide step to its pages (plus default pages). It's submitted, and an
+  Approver - a second person - approves it. Only approved versions reach the
+  stations; the previous version is kept as "superseded".
+- **Middleware link:** every station posts its events (unit started, step
+  changes, LJ/IV4 results with attempts and measurements, rework, escalation,
+  confirmed / not confirmed, faults) and a 30 s heartbeat, and downloads the
+  approved VA map + pages into `va-cache\`. Events are queued in
+  `data\dashboard-outbox.jsonl` first, so a Pi outage loses nothing and never
+  stops production.
+- **Analytics:** live station status, FPY, yield, rework, escalations, cycle
+  time, throughput by hour/day, LJ/IV4 first-try NG rate, time per step
+  (bottlenecks), fault Pareto by code / integration point / station, splits by
+  station / product / operator, and a per-unit timeline (by Asset ID).
+- **Fault feed:** every station fault with its code; Technicians resolve them
+  with a note.
+
+Turn it on per station: `Dashboard:Enabled=true` and the `AVIS_DASHBOARD_KEY`
+environment variable. Install on the Pi: `dashboard/deploy/README.md`.
+
+Run it locally: `cd dashboard && npm ci && cp .env.local.example .env.local`
+(fill in `SESSION_SECRET` and `AVIS_STATION_KEY`), then `npm run dev` and open
+`http://localhost:3230`. Point a Simulation-mode station at it with
+`Dashboard:Enabled=true` in `appsettings.Simulation.json`.
+
 ## Deploying to a station PC
 
 ```powershell
 dotnet publish src/Avis.App/Avis.App.csproj -c Release -r win-x64 --self-contained true -o C:\AVIS
 ```
 
-Set `IFACTORY_USERNAME` / `IFACTORY_PASSWORD` as Windows environment variables.
+Set `IFACTORY_USERNAME` / `IFACTORY_PASSWORD` (and `AVIS_DASHBOARD_KEY` if the
+dashboard is enabled) as Windows environment variables.
 Start `C:\AVIS\AVIS.exe` at operator logon with Task Scheduler. The JabilEye
 middleware README explains why it must not be a Windows Service: a service runs
 in Session 0, where HID badge scans never arrive. AVIS is single-instance.
@@ -256,5 +299,8 @@ From the **JabilEye middleware**:
 - **Images:** BaseProgram's `Home` / `Setup` / `CVG` / `JABIL` resources weren't
   included. Drop `cvg.png`, `home.png` and `jabil.png` into `src/Avis.App/Assets/`
   and they're picked up automatically. Until then the buttons show text.
+- **Pi-Dashboards repo:** it contains `jig-tracker/first_run_admin_password.txt`,
+  App Hub's `db.json` and other apps' data files. Remove them from the repo and
+  rotate that password.
 - Not run on real Windows hardware yet. Everything compiles and the Core logic
   is unit-tested; the WinForms UI and WebView2 need a first run in Visual Studio.

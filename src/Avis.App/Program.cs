@@ -3,6 +3,7 @@ using Avis.App.Ui;
 using Avis.App.Workers;
 using Avis.Camera;
 using Avis.Configuration;
+using Avis.Dashboard;
 using Avis.Faults;
 using Avis.IFactory;
 using Avis.Imaging;
@@ -140,9 +141,15 @@ internal static class Program
         var imageStaging = Bind<ImageStagingOptions>(ImageStagingOptions.SectionName);
         var faultLogOptions = Bind<FaultLogOptions>(FaultLogOptions.SectionName);
         var simulation = Bind<SimulationOptions>(SimulationOptions.SectionName);
+        var dashboard = Bind<DashboardOptions>(DashboardOptions.SectionName);
 
         ifactory.Username = Environment.GetEnvironmentVariable("IFACTORY_USERNAME") ?? "";
         ifactory.Password = Environment.GetEnvironmentVariable("IFACTORY_PASSWORD") ?? "";
+        dashboard.ApiKey = Environment.GetEnvironmentVariable("AVIS_DASHBOARD_KEY") ?? "";
+        if (string.IsNullOrWhiteSpace(dashboard.StationName))
+        {
+            dashboard.StationName = station.Name;
+        }
 
         // Station INI on the share (falls back to the last good local copy - never throws).
         var ini = AviProjectConfig.Load(avis.IniPath, AvisOptions.ResolvePath(avis.IniCachePath));
@@ -167,6 +174,7 @@ internal static class Program
         }
 
         AppOptionsValidator.Validate(ifactory, scanner, camera, lightGuide, requireIFactory: !simulation.Enabled);
+        AppOptionsValidator.ValidateDashboard(dashboard);
         if (simulation.Enabled)
         {
             Log.Warning("AVIS is running in SIMULATION mode - no scanner, camera, LightGuide or iFactory traffic is real");
@@ -186,6 +194,7 @@ internal static class Program
         builder.Services.AddSingleton(ini);
         builder.Services.AddSingleton(new EnvironmentSelection(simulation.Enabled ? "SIMULATION" : environmentName, environment));
         builder.Services.AddSingleton(simulation);
+        builder.Services.AddSingleton(dashboard);
         builder.Services.AddSingleton(TimeProvider.System);
 
         builder.Services.AddSingleton(sp =>
@@ -221,7 +230,29 @@ internal static class Program
             sp.GetRequiredService<CounterStore>(),
             station, ifactory, camera, sequence, ini,
             sp.GetRequiredService<ILogger<StationSequencer>>(),
-            TimeProvider.System));
+            TimeProvider.System,
+            sp.GetRequiredService<IVisualAidResolver>(),
+            sp.GetRequiredService<IStationEventSink>()));
+
+        if (dashboard.Enabled)
+        {
+            // Events queue locally and upload in the background; approved VAs come from the local cache.
+            Log.Information("Dashboard sync enabled: {BaseUrl} as {Station}", dashboard.BaseUrl, dashboard.StationName);
+            builder.Services.AddSingleton(sp => new EventOutbox(
+                AvisOptions.ResolvePath(dashboard.OutboxPath), dashboard.MaxOutboxEvents, sp.GetRequiredService<ILogger<EventOutbox>>()));
+            builder.Services.AddSingleton<IStationEventSink>(sp => sp.GetRequiredService<EventOutbox>());
+            builder.Services.AddSingleton(sp => new VaCatalog(
+                AvisOptions.ResolvePath(dashboard.CacheDirectory), sp.GetRequiredService<ILogger<VaCatalog>>()));
+            builder.Services.AddSingleton<IVisualAidResolver>(sp => sp.GetRequiredService<VaCatalog>());
+            builder.Services.AddHttpClient<DashboardClient>(c => c.Timeout = TimeSpan.FromSeconds(dashboard.RequestTimeoutSeconds));
+            builder.Services.AddSingleton<VaCacheSync>();
+            builder.Services.AddHostedService<DashboardWorker>();
+        }
+        else
+        {
+            builder.Services.AddSingleton<IStationEventSink>(NullStationEventSink.Instance);
+            builder.Services.AddSingleton<IVisualAidResolver>(NoVisualAids.Instance);
+        }
 
         if (simulation.Enabled)
         {
